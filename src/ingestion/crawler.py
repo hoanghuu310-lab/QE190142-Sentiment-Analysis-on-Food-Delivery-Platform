@@ -1,147 +1,151 @@
-import requests
 import json
 import time
-import random
 import os
-from schema_sentiment import ReviewItem
+import random
+from selenium import webdriver
+from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.common.by import By
+from webdriver_manager.chrome import ChromeDriverManager
 
-# --- CẤU HÌNH ---
-DATA_FOLDER = "data_sentiment"
+# --- PHẦN 1: ĐỊNH NGHĨA CLASS REVIEW (Gộp vào đây để xóa bỏ lỗi Import) ---
+class ReviewItem:
+    def __init__(self, review_id, restaurant_id, restaurant_name, city, user_name, comment, rating, review_date):
+        self.review_id = review_id
+        self.restaurant_id = restaurant_id
+        self.restaurant_name = restaurant_name
+        self.city = city
+        self.user_name = user_name
+        self.comment = comment
+        self.rating = rating
+        self.review_date = review_date
+
+    def to_json_line(self):
+        # Chuyển đối tượng thành chuỗi JSON để lưu file
+        return json.dumps(self.__dict__, ensure_ascii=False)
+
+# --- PHẦN 2: CẤU HÌNH ---
+DATA_FOLDER = "data_foody_ok"
 if not os.path.exists(DATA_FOLDER):
     os.makedirs(DATA_FOLDER)
 
-HEADERS = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    'X-Requested-With': 'XMLHttpRequest',
-    'x-foody-client-type': '1',
-    'x-foody-client-version': '3.0.0',
-    'x-foody-api-version': '1',
+# Bản đồ vùng miền (Dùng để đặt tên file kết quả)
+REGION_MAPPING = {
+    "MienBac": ["ha-noi", "hai-phong", "quang-ninh", "bac-ninh"],
+    "MienTrung": ["da-nang", "hue", "khanh-hoa", "nha-trang", "quy-nhon", "vinh", "binh-dinh"],
+    "MienNam": ["ho-chi-minh", "can-tho", "dong-nai", "binh-duong", "vung-tau"]
 }
 
-# BẢNG TỪ ĐIỂN MAP TỪ URL -> ID THÀNH PHỐ
-CITY_MAPPING = {
-    "ha-noi": {"id": 218, "name": "HaNoi"},
-    "ho-chi-minh": {"id": 217, "name": "HCM"},
-    "da-nang": {"id": 219, "name": "DaNang"},
-    "hai-phong": {"id": 220, "name": "HaiPhong"},
-    # Có thể thêm các tỉnh khác nếu cần
-}
-
-def analyze_url(url):
-    """
-    Phân tích URL để tách Slug và Thành phố
-    Input: https://shopeefood.vn/ha-noi/pho-thin-lo-duc
-    Output: slug='pho-thin-lo-duc', city_info={'id': 218, 'name': 'HaNoi'}
-    """
-    # Xóa phần https://shopeefood.vn/
-    clean_url = url.replace("https://shopeefood.vn/", "").replace("http://shopeefood.vn/", "")
-    parts = clean_url.split("/")
+def setup_driver():
+    options = webdriver.ChromeOptions()
+    # options.add_argument("--headless") # Bỏ comment nếu muốn chạy ẩn
+    options.add_argument("--disable-gpu")
+    options.add_argument("--no-sandbox")
+    options.add_argument("--window-size=1920,1080")
+    # Tắt dòng chữ "Chrome đang bị điều khiển bởi phần mềm tự động"
+    options.add_experimental_option("excludeSwitches", ["enable-automation"])
+    options.add_experimental_option('useAutomationExtension', False)
     
-    # URL chuẩn thường là: [ten-thanh-pho]/[ten-quan]
-    if len(parts) >= 2:
-        city_slug = parts[0]
-        restaurant_slug = parts[1].split("?")[0] # Bỏ tham số ? sau slug
-        
-        # Tra cứu trong từ điển
-        city_info = CITY_MAPPING.get(city_slug)
-        if city_info:
-            return restaurant_slug, city_info
+    service = Service(ChromeDriverManager().install())
+    driver = webdriver.Chrome(service=service, options=options)
+    return driver
+
+def detect_region_from_url(url):
+    # Xử lý link để tìm vùng miền
+    clean_url = url.replace("https://www.foody.vn/", "").replace("http://www.foody.vn/", "")
+    parts = clean_url.split("/")
+    if len(parts) < 1: return "Khac", "unknown"
+    
+    city_slug = parts[0]
+    found_region = "Khac"
+    
+    for region, cities in REGION_MAPPING.items():
+        if city_slug in cities:
+            found_region = region
+            break
             
-    return None, None
+    return found_region, city_slug
 
-def get_restaurant_id_from_slug(slug):
-    """Gọi API để đổi tên quán (slug) thành ID số"""
-    url = f"https://gappapi.deliverynow.vn/api/delivery/get_detail?request_id={slug}&id_type=2"
-    try:
-        resp = requests.get(url, headers=HEADERS)
-        data = resp.json()
-        delivery_detail = data.get('reply', {}).get('delivery_detail', {})
-        
-        return {
-            "id": delivery_detail.get('delivery_id'),
-            "name": delivery_detail.get('name')
-        }
-    except:
-        return None
+def scroll_to_load_reviews(driver):
+    """Hàm cuộn trang để Foody tải thêm bình luận"""
+    print("   ⬇️ Đang cuộn trang...")
+    for _ in range(3): # Cuộn 3 lần
+        driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+        time.sleep(2)
 
-def crawl_reviews_by_link(url_list, limit_per_shop=100):
-    print(f"🚀 Đang xử lý danh sách {len(url_list)} quán ăn...")
+def crawl_foody_ok(url_list):
+    print("🚀 Đang khởi động Chrome...")
+    driver = setup_driver()
     
     for url in url_list:
-        print(f"\n🔗 Checking: {url}")
+        region, city = detect_region_from_url(url)
+        print(f"\n🌍 Đang truy cập: {url}")
         
-        # 1. Tự động phát hiện thành phố
-        slug, city_info = analyze_url(url)
-        
-        if not city_info:
-            print("   ⚠️ Không nhận diện được thành phố từ Link này. Bỏ qua.")
-            continue
-            
-        print(f"   -> Phát hiện: {city_info['name']} (Slug: {slug})")
-        
-        # 2. Lấy ID quán
-        shop_info = get_restaurant_id_from_slug(slug)
-        if not shop_info or not shop_info['id']:
-            print("   ❌ Không lấy được ID quán. Link có thể bị lỗi.")
-            continue
-            
-        shop_id = shop_info['id']
-        shop_name = shop_info['name']
-        
-        # 3. Tạo tên file tự động theo thành phố (TỰ ĐỘNG PHÂN LOẠI TỆP KHÁCH HÀNG)
-        output_file = os.path.join(DATA_FOLDER, f"reviews_{city_info['name']}.jsonl")
-        
-        # 4. Crawl Review
-        print(f"   -> Đang tải review cho quán: {shop_name}...")
-        api_review = f"https://gappapi.deliverynow.vn/api/delivery/get_reply?id_type=1&request_id={shop_id}&sort_type=1&limit={limit_per_shop}"
+        output_file = os.path.join(DATA_FOLDER, f"reviews_{region}.jsonl")
         
         try:
-            res = requests.get(api_review, headers=HEADERS)
-            reviews = res.json().get('reply', {}).get('reply_list', [])
+            driver.get(url)
+            time.sleep(5) # Đợi web load
             
-            if not reviews:
-                print("   ⚠️ Quán này chưa có review nào.")
-                continue
-
+            # 1. Cuộn trang để hiện bình luận
+            scroll_to_load_reviews(driver)
+            
+            # 2. Tìm các thẻ chứa review (Cập nhật Selector mới nhất)
+            review_elements = driver.find_elements(By.XPATH, "//div[contains(@class, 'review-item')] | //li[contains(@class, 'review-item')]")
+            
+            print(f"   👀 Tìm thấy {len(review_elements)} review trên màn hình.")
+            
+            count = 0
             with open(output_file, 'a', encoding='utf-8') as f:
-                for rev in reviews:
-                    item = ReviewItem(
-                        review_id=rev.get('id'),
-                        restaurant_id=shop_id,
-                        restaurant_name=shop_name,
-                        city=city_info['name'], # Lưu tên thành phố vào từng dòng
-                        user_name=rev.get('name', 'Anonymous'),
-                        comment=rev.get('comment', ''),
-                        rating=rev.get('rating', 0),
-                        review_date=rev.get('created_on', '')
-                    )
-                    f.write(item.to_json_line() + "\n")
+                for idx, element in enumerate(review_elements):
+                    try:
+                        # Lấy Tên User
+                        try: user = element.find_element(By.CSS_SELECTOR, ".ru-username").text.strip()
+                        except: user = "Anonymous"
+                        
+                        # Lấy Nội dung
+                        try: comment = element.find_element(By.CSS_SELECTOR, ".rd-des").text.strip()
+                        except: comment = ""
+                        
+                        # Lấy Điểm số
+                        try: 
+                            rating_text = element.find_element(By.CSS_SELECTOR, ".review-points span").text
+                            rating = float(rating_text)
+                        except: rating = 0.0
+                        
+                        # Chỉ lưu nếu có nội dung bình luận
+                        if comment:
+                            item = ReviewItem(
+                                review_id=f"foody_{idx}_{random.randint(100,999)}",
+                                restaurant_id=0,
+                                restaurant_name=url.split("/")[-1],
+                                city=city,
+                                user_name=user,
+                                comment=comment,
+                                rating=rating,
+                                review_date=""
+                            )
+                            f.write(item.to_json_line() + "\n")
+                            count += 1
+                            
+                    except Exception:
+                        continue 
             
-            print(f"   ✅ Đã lưu {len(reviews)} reviews vào file: reviews_{city_info['name']}.jsonl")
-            
-        except Exception as e:
-            print(f"   ❌ Lỗi crawl review: {e}")
-            
-        # Nghỉ nhẹ để không bị spam
-        time.sleep(random.uniform(1, 3))
+            print(f"   🎉 Đã lưu {count} reviews vào file: {output_file}")
 
-# --- MAIN RUN ---
+        except Exception as e:
+            print(f"   ❌ Lỗi: {e}")
+            
+        time.sleep(3) # Nghỉ giữa các quán
+
+    print(f"\n🏁 Xong! Kiểm tra folder '{DATA_FOLDER}' nhé.")
+    driver.quit()
+
 if __name__ == "__main__":
-    
-    # BẠN CHỈ CẦN DÁN LIST LINK VÀO ĐÂY (LỘN XỘN CŨNG ĐƯỢC)
-    # Code sẽ tự tách: Link nào Hà Nội -> Vào file HaNoi, Link nào HCM -> Vào file HCM
-    
+    # --- DANH SÁCH LINK FOODY CHUẨN (Đã kiểm tra hoạt động tốt) ---
     MY_LINKS = [
-        # Link Hà Nội
-        "https://shopeefood.vn/ha-noi/pho-thin-lo-duc", 
-        "https://shopeefood.vn/ha-noi/bun-cha-dac-kim-hang-manh",
-        
-        # Link Sài Gòn
-        "https://shopeefood.vn/ho-chi-minh/com-tam-cali-nguyen-trai-q1",
-        "https://shopeefood.vn/ho-chi-minh/phuc-long-lotte-mart-le-dai-hanh",
-        
-        # Link Đà Nẵng
-        "https://shopeefood.vn/da-nang/my-quang-ba-mua-tran-binh-trong"
+        "https://www.foody.vn/ho-chi-minh/ech-xanh",
+        "https://www.foody.vn/ho-chi-minh/boom-ca-phe-tra-sua-sua-tuoi-tran-chau-duong-den-duong-so-1",
+        "https://www.foody.vn/ho-chi-minh/banh-xep-789-go-dau"
     ]
     
-    crawl_reviews_by_link(MY_LINKS, limit_per_shop=50)
+    crawl_foody_ok(MY_LINKS)
