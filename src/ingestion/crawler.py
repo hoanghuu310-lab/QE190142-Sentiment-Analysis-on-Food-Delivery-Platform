@@ -10,7 +10,6 @@ DATA_FOLDER = "data_sentiment"
 if not os.path.exists(DATA_FOLDER):
     os.makedirs(DATA_FOLDER)
 
-# Header giả lập (ShopeeFood API khá dễ, chỉ cần header cơ bản)
 HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
     'X-Requested-With': 'XMLHttpRequest',
@@ -19,101 +18,130 @@ HEADERS = {
     'x-foody-api-version': '1',
 }
 
-def get_reviews_of_restaurant(restaurant_id, restaurant_name, city_name, limit=50):
-    """Hàm lấy review của 1 quán cụ thể"""
-    print(f"   ... Đang lấy review cho quán: {restaurant_name} (ID: {restaurant_id})")
-    
-    reviews_collected = []
-    
-    # API lấy Review (Tham số: request_id là ID quán)
-    # Lấy comment mới nhất (sort_type=1)
-    url = f"https://gappapi.deliverynow.vn/api/delivery/get_reply?id_type=1&request_id={restaurant_id}&sort_type=1&limit={limit}"
-    
-    try:
-        response = requests.get(url, headers=HEADERS)
-        if response.status_code != 200:
-            print(f"⚠️ Lỗi API Review: {response.status_code}")
-            return []
-            
-        data = response.json()
-        reply_list = data.get('reply', {}).get('reply_list', [])
-        
-        for reply in reply_list:
-            # Mapping dữ liệu ShopeeFood -> Schema Sentiment
-            item = ReviewItem(
-                review_id=reply.get('id'),
-                restaurant_id=restaurant_id,
-                restaurant_name=restaurant_name,
-                city=city_name,
-                user_name=reply.get('name', 'Anonymous'),
-                comment=reply.get('comment', ''),
-                rating=reply.get('rating', 0), # Rating trên thang 10 hoặc 5
-                review_date=reply.get('created_on', '')
-            )
-            reviews_collected.append(item)
-            
-    except Exception as e:
-        print(f"❌ Lỗi khi crawl quán {restaurant_name}: {e}")
-        
-    return reviews_collected
+# BẢNG TỪ ĐIỂN MAP TỪ URL -> ID THÀNH PHỐ
+CITY_MAPPING = {
+    "ha-noi": {"id": 218, "name": "HaNoi"},
+    "ho-chi-minh": {"id": 217, "name": "HCM"},
+    "da-nang": {"id": 219, "name": "DaNang"},
+    "hai-phong": {"id": 220, "name": "HaiPhong"},
+    # Có thể thêm các tỉnh khác nếu cần
+}
 
-def crawl_by_category(city_name, city_id, category_id, max_restaurants=20):
-    print(f"\n🚀 BẮT ĐẦU CRAWL: {city_name} (Category ID: {category_id})")
-    output_file = os.path.join(DATA_FOLDER, f"reviews_{city_name}_cat{category_id}.jsonl")
+def analyze_url(url):
+    """
+    Phân tích URL để tách Slug và Thành phố
+    Input: https://shopeefood.vn/ha-noi/pho-thin-lo-duc
+    Output: slug='pho-thin-lo-duc', city_info={'id': 218, 'name': 'HaNoi'}
+    """
+    # Xóa phần https://shopeefood.vn/
+    clean_url = url.replace("https://shopeefood.vn/", "").replace("http://shopeefood.vn/", "")
+    parts = clean_url.split("/")
     
-    # 1. Lấy danh sách quán ăn theo category và city
-    # API Get Delivery From Category
-    list_url = "https://gappapi.deliverynow.vn/api/delivery/get_from_category"
-    params = {
-        "city_id": city_id,
-        "category_id": category_id,
-        "page_size": max_restaurants,
-        "new_id": 0,
-        "sort_type": 1 # Sắp xếp theo phổ biến
-    }
-    
+    # URL chuẩn thường là: [ten-thanh-pho]/[ten-quan]
+    if len(parts) >= 2:
+        city_slug = parts[0]
+        restaurant_slug = parts[1].split("?")[0] # Bỏ tham số ? sau slug
+        
+        # Tra cứu trong từ điển
+        city_info = CITY_MAPPING.get(city_slug)
+        if city_info:
+            return restaurant_slug, city_info
+            
+    return None, None
+
+def get_restaurant_id_from_slug(slug):
+    """Gọi API để đổi tên quán (slug) thành ID số"""
+    url = f"https://gappapi.deliverynow.vn/api/delivery/get_detail?request_id={slug}&id_type=2"
     try:
-        res = requests.get(list_url, headers=HEADERS, params=params)
-        items = res.json().get('reply', {}).get('delivery_infos', [])
+        resp = requests.get(url, headers=HEADERS)
+        data = resp.json()
+        delivery_detail = data.get('reply', {}).get('delivery_detail', {})
         
-        print(f"-> Tìm thấy {len(items)} quán. Bắt đầu quét review...")
+        return {
+            "id": delivery_detail.get('delivery_id'),
+            "name": delivery_detail.get('name')
+        }
+    except:
+        return None
+
+def crawl_reviews_by_link(url_list, limit_per_shop=100):
+    print(f"🚀 Đang xử lý danh sách {len(url_list)} quán ăn...")
+    
+    for url in url_list:
+        print(f"\n🔗 Checking: {url}")
         
-        with open(output_file, 'a', encoding='utf-8', buffering=1) as f:
-            for shop in items:
-                delivery_id = shop.get('delivery_id') # Đây là ID quán dùng để lấy review
-                name = shop.get('name')
-                
-                # Gọi hàm lấy review cho quán này
-                reviews = get_reviews_of_restaurant(delivery_id, name, city_name, limit=50) # Lấy 50 review/quán
-                
-                # Ghi xuống file
+        # 1. Tự động phát hiện thành phố
+        slug, city_info = analyze_url(url)
+        
+        if not city_info:
+            print("   ⚠️ Không nhận diện được thành phố từ Link này. Bỏ qua.")
+            continue
+            
+        print(f"   -> Phát hiện: {city_info['name']} (Slug: {slug})")
+        
+        # 2. Lấy ID quán
+        shop_info = get_restaurant_id_from_slug(slug)
+        if not shop_info or not shop_info['id']:
+            print("   ❌ Không lấy được ID quán. Link có thể bị lỗi.")
+            continue
+            
+        shop_id = shop_info['id']
+        shop_name = shop_info['name']
+        
+        # 3. Tạo tên file tự động theo thành phố (TỰ ĐỘNG PHÂN LOẠI TỆP KHÁCH HÀNG)
+        output_file = os.path.join(DATA_FOLDER, f"reviews_{city_info['name']}.jsonl")
+        
+        # 4. Crawl Review
+        print(f"   -> Đang tải review cho quán: {shop_name}...")
+        api_review = f"https://gappapi.deliverynow.vn/api/delivery/get_reply?id_type=1&request_id={shop_id}&sort_type=1&limit={limit_per_shop}"
+        
+        try:
+            res = requests.get(api_review, headers=HEADERS)
+            reviews = res.json().get('reply', {}).get('reply_list', [])
+            
+            if not reviews:
+                print("   ⚠️ Quán này chưa có review nào.")
+                continue
+
+            with open(output_file, 'a', encoding='utf-8') as f:
                 for rev in reviews:
-                    f.write(rev.to_json_line() + "\n")
-                
-                print(f"      + Đã lưu {len(reviews)} review của quán: {name}")
-                time.sleep(random.uniform(1, 2)) # Nghỉ nhẹ
-                
-    except Exception as e:
-        print(f"❌ Lỗi Lấy Danh Sách Quán: {e}")
+                    item = ReviewItem(
+                        review_id=rev.get('id'),
+                        restaurant_id=shop_id,
+                        restaurant_name=shop_name,
+                        city=city_info['name'], # Lưu tên thành phố vào từng dòng
+                        user_name=rev.get('name', 'Anonymous'),
+                        comment=rev.get('comment', ''),
+                        rating=rev.get('rating', 0),
+                        review_date=rev.get('created_on', '')
+                    )
+                    f.write(item.to_json_line() + "\n")
+            
+            print(f"   ✅ Đã lưu {len(reviews)} reviews vào file: reviews_{city_info['name']}.jsonl")
+            
+        except Exception as e:
+            print(f"   ❌ Lỗi crawl review: {e}")
+            
+        # Nghỉ nhẹ để không bị spam
+        time.sleep(random.uniform(1, 3))
 
 # --- MAIN RUN ---
 if __name__ == "__main__":
     
-    # ID CÁC THÀNH PHỐ TRÊN SHOPEEFOOD (QUAN TRỌNG ĐỂ SO SÁNH VÙNG MIỀN)
-    CITY_HCM = 217
-    CITY_HN = 218
-    CITY_DANANG = 219
+    # BẠN CHỈ CẦN DÁN LIST LINK VÀO ĐÂY (LỘN XỘN CŨNG ĐƯỢC)
+    # Code sẽ tự tách: Link nào Hà Nội -> Vào file HaNoi, Link nào HCM -> Vào file HCM
     
-    # ID DANH MỤC (Ví dụ: 1=Cơm, 12=Trà sữa, ...)
-    CAT_COM = 1
-    CAT_TRASUA = 12
+    MY_LINKS = [
+        # Link Hà Nội
+        "https://shopeefood.vn/ha-noi/pho-thin-lo-duc", 
+        "https://shopeefood.vn/ha-noi/bun-cha-dac-kim-hang-manh",
+        
+        # Link Sài Gòn
+        "https://shopeefood.vn/ho-chi-minh/com-tam-cali-nguyen-trai-q1",
+        "https://shopeefood.vn/ho-chi-minh/phuc-long-lotte-mart-le-dai-hanh",
+        
+        # Link Đà Nẵng
+        "https://shopeefood.vn/da-nang/my-quang-ba-mua-tran-binh-trong"
+    ]
     
-    # --- KỊCH BẢN CHẠY ---
-    
-    # 1. Crawl Cơm ở TP.HCM
-    crawl_by_category(city_name="HCM", city_id=CITY_HCM, category_id=CAT_COM, max_restaurants=10)
-    
-    # 2. Crawl Cơm ở Hà Nội (Để so sánh)
-    crawl_by_category(city_name="HaNoi", city_id=CITY_HN, category_id=CAT_COM, max_restaurants=10)
-    
-    print("\n✅ HOÀN TẤT! Kiểm tra thư mục 'data_sentiment'")
+    crawl_reviews_by_link(MY_LINKS, limit_per_shop=50)
