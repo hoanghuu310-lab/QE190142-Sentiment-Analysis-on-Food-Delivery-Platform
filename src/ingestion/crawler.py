@@ -10,10 +10,17 @@ from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
 from webdriver_manager.chrome import ChromeDriverManager
 
-# --- CẤU HÌNH ---
+# --- 1. NHẬP DANH SÁCH LINK CỦA BẠN TẠI ĐÂY ---
+MY_LINKS = [
+
+"https://www.foody.vn/ho-chi-minh/hu-tieu-mi-a-keeng"
+    # Bạn cứ dán thêm link vào đây thoải mái...
+]
+
+# --- 2. CẤU HÌNH ---
 MAX_WORKERS = 2       # Số luồng (An toàn nhất là 2)
 TARGET_REVIEWS = 50   # Số review mỗi quán
-DATA_FOLDER = "data_by_region" # Folder mới chứa data đã phân loại
+DATA_FOLDER = "data_by_region" # Folder chứa data phân loại
 HISTORY_FILE = "history_crawled.txt"
 
 # Định vị thư mục
@@ -21,15 +28,27 @@ os.chdir(os.path.dirname(os.path.abspath(__file__)))
 if not os.path.exists(DATA_FOLDER):
     os.makedirs(DATA_FOLDER)
 
-# --- CÁC KHÓA AN TOÀN (QUAN TRỌNG) ---
-history_lock = threading.Lock() # Khóa để ghi lịch sử
-file_write_lock = threading.Lock() # Khóa để ghi data (Tránh xung đột)
+# --- CÁC KHÓA AN TOÀN ---
+history_lock = threading.Lock() 
+file_write_lock = threading.Lock() 
 
-# --- BẢN ĐỒ VÙNG MIỀN ---
+# --- BẢN ĐỒ VÙNG MIỀN (FULL 63 TỈNH) ---
+# Giữ nguyên bản đồ đầy đủ để đảm bảo link nào cũng phân loại được
 REGION_MAPPING = {
-    "MienBac": ["ha-noi", "hai-phong", "quang-ninh", "bac-ninh", "thai-nguyen"],
-    "MienTrung": ["da-nang", "hue", "khanh-hoa", "nha-trang", "quy-nhon", "vinh", "binh-dinh", "quang-nam"],
-    "MienNam": ["ho-chi-minh", "can-tho", "dong-nai", "binh-duong", "vung-tau", "long-an"]
+    "MienBac": [
+        "lao-cai", "sapa", "yen-bai", "dien-bien", "hoa-binh", "lai-chau", "son-la",
+        "ha-giang", "cao-bang", "bac-kan", "lang-son", "tuyen-quang", "thai-nguyen", "phu-tho", "bac-giang", "quang-ninh", "ha-long", "mong-cai",
+        "bac-ninh", "ha-nam", "ha-noi", "hai-duong", "hai-phong", "hung-yen", "nam-dinh", "ninh-binh", "thai-binh", "vinh-phuc"
+    ],
+    "MienTrung": [
+        "thanh-hoa", "nghe-an", "vinh", "ha-tinh", "quang-binh", "quang-tri", "hue", "thua-thien-hue",
+        "da-nang", "quang-nam", "hoi-an", "quang-ngai", "binh-dinh", "quy-nhon", "phu-yen", "khanh-hoa", "nha-trang", "ninh-thuan", "binh-thuan", "phan-thiet",
+        "kon-tum", "gia-lai", "dak-lak", "buon-ma-thuot", "dak-nong", "lam-dong", "da-lat", "bao-loc"
+    ],
+    "MienNam": [
+        "ho-chi-minh", "sai-gon", "ba-ria-vung-tau", "vung-tau", "binh-duong", "binh-phuoc", "dong-nai", "bien-hoa", "tay-ninh",
+        "an-giang", "bac-lieu", "ben-tre", "ca-mau", "can-tho", "dong-thap", "hau-giang", "kien-giang", "phu-quoc", "rach-gia", "long-an", "soc-trang", "tien-giang", "tra-vinh", "vinh-long"
+    ]
 }
 
 class ReviewItem:
@@ -57,13 +76,12 @@ def setup_driver():
     return driver
 
 def detect_region(url):
-    """Hàm soi Link để biết quán thuộc miền nào"""
     clean_url = url.replace("https://www.foody.vn/", "").replace("http://www.foody.vn/", "")
     parts = clean_url.split("/")
     if len(parts) < 1: return "Khac", "unknown"
     
     city_slug = parts[0]
-    found_region = "Khac" # Mặc định
+    found_region = "Khac"
     
     for region, cities in REGION_MAPPING.items():
         if city_slug in cities:
@@ -94,10 +112,8 @@ def worker_crawl(thread_id, list_urls):
     
     for url in list_urls:
         try:
-            # 1. Xác định vùng miền NGAY TỪ ĐẦU
+            # 1. Tự động chia về folder Bắc/Trung/Nam
             region, city = detect_region(url)
-            
-            # File đích tương ứng (Ví dụ: data_by_region/reviews_MienNam.jsonl)
             output_file = os.path.join(DATA_FOLDER, f"reviews_{region}.jsonl")
             
             driver.get(url)
@@ -112,8 +128,6 @@ def worker_crawl(thread_id, list_urls):
                 mark_as_done(url)
                 continue
 
-            # --- ĐOẠN NÀY DÙNG KHÓA ĐỂ GHI FILE AN TOÀN ---
-            # Gom dữ liệu vào list trước
             lines_to_write = []
             for idx, element in enumerate(items_to_take):
                 try:
@@ -138,7 +152,7 @@ def worker_crawl(thread_id, list_urls):
                         lines_to_write.append(item.to_json_line())
                 except: continue
             
-            # MỞ KHÓA -> GHI VÀO FILE CHUNG -> ĐÓNG KHÓA
+            # Ghi file an toàn (Thread-safe)
             if lines_to_write:
                 with file_write_lock:
                     with open(output_file, 'a', encoding='utf-8') as f:
@@ -155,15 +169,12 @@ def worker_crawl(thread_id, list_urls):
     driver.quit()
 
 if __name__ == "__main__":
-    file_link = "list_links.txt"
-    if not os.path.exists(file_link):
-        print("❌ Chưa có file list_links.txt!")
-        exit()
-        
-    with open(file_link, "r", encoding="utf-8") as f:
-        all_links = list(set([line.strip() for line in f if line.strip()]))
+    # --- PHẦN CHÍNH: XỬ LÝ DANH SÁCH MY_LINKS ---
     
-    # Check lịch sử
+    # 1. Làm sạch danh sách (Xóa trùng lặp, xóa dòng trống)
+    all_links = list(set([line.strip() for line in MY_LINKS if line.strip()]))
+    
+    # 2. Kiểm tra lịch sử (Để không chạy lại cái đã xong)
     done_links = set()
     if os.path.exists(HISTORY_FILE):
         with open(HISTORY_FILE, "r", encoding="utf-8") as f:
@@ -171,10 +182,15 @@ if __name__ == "__main__":
     
     todo_links = [url for url in all_links if url not in done_links]
     
+    print(f"🔥 Tổng input: {len(all_links)}")
+    print(f"✅ Đã xong trước đó: {len(done_links)}")
+    print(f"🚀 Cần chạy: {len(todo_links)} quán")
+    
     if not todo_links:
-        print("🎉 Đã xong hết rồi!")
+        print("🎉 Đã xong hết rồi! Không có gì để chạy.")
         exit()
 
+    # 3. Chia việc cho các Worker
     chunk_size = math.ceil(len(todo_links) / MAX_WORKERS)
     link_chunks = [todo_links[i:i + chunk_size] for i in range(0, len(todo_links), chunk_size)]
     
