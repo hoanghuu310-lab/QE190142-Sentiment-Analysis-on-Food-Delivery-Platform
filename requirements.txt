@@ -1,2 +1,6 @@
 selenium
 webdriver-manager
+minio
+pandas
+sqlalchemy
+psycopg2-binary
