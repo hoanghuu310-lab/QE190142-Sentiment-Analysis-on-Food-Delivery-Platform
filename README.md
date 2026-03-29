@@ -2,8 +2,9 @@
 
 **Đề tài:** Xây dựng hệ thống thu thập, lưu trữ và phân tích cảm xúc khách hàng F&B trên Foody.vn  
 **Sinh viên:** Lê Hoàng Hữu 
-**MSSV:** Qe190142 
+**MSSV:** QE190142 
 **Lớp/Môn học:** ADY201m
+
 
 Dự án phân tích cảm xúc (Sentiment Analysis) từ các đánh giá trên nền tảng **Foody.vn**. Đây là đồ án môn học **ADY202 (AI, Data Science with Python & SQL)** được thiết kế mô phỏng mô hình doanh nghiệp với kiến trúc lưu trữ Data Lake, Database và Machine Learning.
 
@@ -73,13 +74,13 @@ Quy trình từ Crawl dữ liệu -> Lưu Data Lake -> ETL -> Đẩy vào Databa
    python src/ingestion/getlink.py
    
    # Bước 2.2: Từ danh sách link, tiến hành crawl nội dung Review
-   python src/ingestion/crawl.py
+   python src/ingestion/crawler.py
    ```
    *(Dữ liệu thô thu thập được sẽ tự động lưu vào S3 bucket tên `foody-raw-data` trên Data Lake MinIO)*
 
 2. **Chạy luồng Làm sạch & Biến đổi dữ liệu (Processing/ETL):**
    ```bash
-   python src/processing/clean_data_csv.py
+   python src/processing/cleaner.py
    ```
    *(Kết quả sẽ tạo ra file `data/processed/foody_clean_master.csv` sẵn sàng huấn luyện mô hình)*
 
@@ -96,7 +97,7 @@ Xây dựng 2 mô hình Học Máy (Logistic Regression và Random Forest) để
 
 Chạy lệnh:
 ```bash
-python src/modeling/train_models.py
+python src/modeling/model.py
 ```
 **Luồng hoạt động:**
 1. Text từ Clean Dataset sẽ chạy qua bộ mã hóa **TF-IDF**.
