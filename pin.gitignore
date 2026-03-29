@@ -1,1 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+env/
+venv/
+ENV/
+
+# Data (Avoid large files on Git)
+volumes/
+data/raw/
+*.jsonl
+*.csv
+!data/processed/foody_clean_master_sample.csv  # Keep a sample only
+
+# Models
+models/*.pkl
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Reports/PDFs (Keep source MDs)
+*.pdf
 
