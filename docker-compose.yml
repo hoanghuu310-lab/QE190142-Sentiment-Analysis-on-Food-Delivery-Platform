@@ -1,29 +1,66 @@
 version: '3.8'
 
 services:
-  # 1. MINIO (Data Lake)
+  # 1. Data Lake (MinIO)
   minio:
     image: minio/minio
     container_name: foody_minio
     ports:
-      - "9000:9000" # Cổng API
-      - "9001:9001" # Cổng Web quản lý
+      - "9000:9000"
+      - "9001:9001"
     environment:
-      MINIO_ROOT_USER: "admin"
-      MINIO_ROOT_PASSWORD: "password123"
+      MINIO_ROOT_USER: admin
+      MINIO_ROOT_PASSWORD: password123
     command: server /data --console-address ":9001"
     volumes:
-      - ./minio_data:/data
+      - ./volumes/minio:/data
+    networks:
+      - foody_network
 
-  # 2. POSTGRESQL (Database)
+  # 2. Database (PostgreSQL)
   postgres:
     image: postgres:13
     container_name: foody_db
+    environment:
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: password123
+      POSTGRES_DB: foody_cleaned
     ports:
       - "5432:5432"
-    environment:
-      POSTGRES_USER: "user"
-      POSTGRES_PASSWORD: "password"
-      POSTGRES_DB: "foody_analytics"
     volumes:
-      - ./postgres_data:/var/lib/postgresql/data
+      - ./volumes/postgres:/var/lib/postgresql/data
+    networks:
+      - foody_network
+
+  # 3. App Workstation (Python Crawler & ETL)
+  app_workstation:
+    build:
+      context: .
+      dockerfile: docker/app/Dockerfile
+    container_name: foody_app
+    volumes:
+      - .:/app
+    depends_on:
+      - minio
+      - postgres
+    networks:
+      - foody_network
+
+  # 4. Web Demo App (Streamlit & Model)
+  streamlit_app:
+    build:
+      context: .
+      dockerfile: docker/streamlit/Dockerfile
+    container_name: foody_streamlit
+    ports:
+      - "8501:8501"
+    volumes:
+      - .:/app
+    depends_on:
+      - app_workstation
+    networks:
+      - foody_network
+
+networks:
+  foody_network:
+    driver: bridge
